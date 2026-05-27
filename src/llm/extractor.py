@@ -57,6 +57,13 @@ class PersonExtractor:
             response = self.llm.invoke(prompt)
             content = _strip_markdown(response.content)
             data = json.loads(content)
+            # Log token usage if available (LangChain usage_metadata)
+            usage = getattr(response, "usage_metadata", None)
+            if usage:
+                inp = usage.get("input_tokens", "?")
+                out = usage.get("output_tokens", "?")
+                total = usage.get("total_tokens", "?")
+                print(f"[extractor] tokens — in: {inp}, out: {out}, total: {total} | {source_url}")
         except json.JSONDecodeError as e:
             print(f"[extractor] JSON parse error ({source_url}): {e}")
             return []
