@@ -1,5 +1,7 @@
+import json
 from collections import deque, defaultdict
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import pandas as pd
 
@@ -7,6 +9,7 @@ from .fetcher import Fetcher
 from .link_extractor import LinkExtractor
 from .anchor_filter import AnchorTextFilter, ScoredLink
 from ..parsing.trafilatura_parser import extract_text
+from ..parsing.html_to_markdown import html_to_markdown
 from ..classification.relevance import RelevanceClassifier
 
 
@@ -14,10 +17,54 @@ from ..classification.relevance import RelevanceClassifier
 class Page:
     url: str
     html: str
-    text: str
+    text: str          # trafilatura plain text (used for relevance classifier)
+    markdown: str      # cleaned markdown of main content (used for LLM extraction)
     links: list[str]
     is_relevant: bool
     relevance_confidence: float
+
+
+def save_pages(pages: list["Page"], path: str, include_html: bool = False) -> None:
+    """Save crawled pages to a JSON file.
+
+    Args:
+        pages: list of Page objects to save.
+        path: destination file path (e.g. "pages.json").
+        include_html: whether to save raw HTML (makes file much larger).
+    """
+    data = [
+        {
+            "url": p.url,
+            "text": p.text,
+            "markdown": p.markdown,
+            "links": p.links,
+            "is_relevant": p.is_relevant,
+            "relevance_confidence": p.relevance_confidence,
+            **({"html": p.html} if include_html else {}),
+        }
+        for p in pages
+    ]
+    Path(path).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"[pages] Saved {len(pages)} pages → {path}")
+
+
+def load_pages(path: str) -> list["Page"]:
+    """Load pages from a JSON file saved by save_pages()."""
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    pages = [
+        Page(
+            url=d["url"],
+            html=d.get("html", ""),
+            text=d.get("text", ""),
+            markdown=d.get("markdown", ""),
+            links=d["links"],
+            is_relevant=d["is_relevant"],
+            relevance_confidence=d["relevance_confidence"],
+        )
+        for d in data
+    ]
+    print(f"[pages] Loaded {len(pages)} pages ← {path}")
+    return pages
 
 
 class Crawler:
@@ -83,13 +130,14 @@ class Crawler:
             is_rel, conf = self.relevance.is_relevant(text)
             print(f"[LLM] #{i} | {url} | rel={is_rel} conf={conf:.2f}")
 
-            if is_rel and conf >= 0.92:
+            if is_rel and conf >= 0.92: #todo: to attrs
                 raw_links = self.link_extractor.extract_links(html, url)
                 same_domain = self.link_extractor.filter_same_domain(raw_links, url)
                 pages.append(Page(
                     url=url,
                     html=html,
                     text=text,
+                    markdown=html_to_markdown(html),
                     links=[u for u, _, _ in same_domain],
                     is_relevant=True,
                     relevance_confidence=conf,

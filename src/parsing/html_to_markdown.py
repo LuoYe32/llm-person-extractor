@@ -94,3 +94,5 @@ def html_to_markdown(html: str, max_chars: int = 12_000) -> str:
     result = re.sub(r"\n{3,}", "\n\n", result).strip()
 
     return result[:max_chars]
+
+#todo: to utils
