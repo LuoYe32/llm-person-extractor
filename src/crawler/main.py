@@ -1,12 +1,19 @@
-from src.crawler.crawler import Crawler
+from src.crawler.crawler import Crawler, save_pages, load_pages
+from src.scraper.scraper import Scraper
 
+PAGES_FILE = "pages.json"
 
 if __name__ == "__main__":
-    crawler = Crawler()
+    import sys
 
-    # pages = crawler.crawl("https://zdrav74.ru/")
-    pages = crawler.crawl("https://digital.gov74.ru/digital.htm")
-    # pages = crawler.crawl("https://kkglo.lenobl.ru/")
+    if "--load" in sys.argv:
+        # Пропустить краулер, загрузить сохранённые страницы
+        pages = load_pages(PAGES_FILE)
+    else:
+        crawler = Crawler()
+        pages = crawler.crawl("https://kkglo.lenobl.ru/")
+        save_pages(pages, PAGES_FILE)
 
-    for p in pages:
-        print(p.url, len(p.links))
+    scraper = Scraper()
+    persons = scraper.scrape_pages(pages)
+    scraper.to_csv(persons, "result.csv")
