@@ -147,6 +147,7 @@ class AnchorTextFilter:
         "novost": -0.85,
         "news": -0.9,
         "press": -0.8,
+        "geroi": -0.8,
         "prikazy": -0.85,
         "prikaz": -0.8,
         "zakupki": -0.9,
