@@ -56,11 +56,17 @@ def setup_logging(level: int = logging.DEBUG) -> None:
     root = logging.getLogger()
     root.setLevel(level)
 
-    if not root.handlers:
-        root.addHandler(handler)
-    else:
-        root.handlers.clear()
-        root.addHandler(handler)
+    root.handlers.clear()
+    root.addHandler(handler)
+
+    # Elasticsearch handler — added only when ELASTICSEARCH_URL is set
+    from settings.settings import settings
+    if settings.ELASTICSEARCH_URL:
+        from src.elastic import ElasticsearchHandler, start as es_start
+        es_handler = ElasticsearchHandler()
+        es_handler.setLevel(logging.INFO)   # ship INFO+ to ES; DEBUG stays local only
+        root.addHandler(es_handler)
+        es_start()                          # launch background sender thread
 
     for noisy in (
         "httpx", "httpcore", "openai", "langchain", "langchain_core",

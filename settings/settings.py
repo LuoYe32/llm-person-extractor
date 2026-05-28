@@ -26,7 +26,10 @@ class Settings(BaseSettings):
     DEEPSEEK_API_KEY: Optional[str] = None
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
     DEEPSEEK_MODEL: str = "deepseek-v4-flash"
-    # DEEPSEEK_MODEL: str = "deepseek-chat"
+
+    # Elasticsearch (optional — leave blank to disable)
+    ELASTICSEARCH_URL: Optional[str] = None          # e.g. "http://localhost:9200"
+    ELASTICSEARCH_INDEX_PREFIX: str = "llm-extractor"
 
     # Links
     SEED_URL: Optional[str] = "http://newhq.b-edu.ru/o-departamente/rukovodstvo/"

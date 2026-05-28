@@ -43,6 +43,7 @@ from .llm.extractor import PersonExtractor
 from .scraper.schemas import RoivDecisionMaker_v2
 from .scraper.merger import merge_persons
 from .logger import get_logger
+from . import elastic
 from settings.settings import settings
 
 log = get_logger(__name__)
@@ -312,6 +313,12 @@ async def extract_persons(ctx: RunContext[AgentDeps], url: str) -> str:
     ctx.deps.extracted_persons.extend(raw)
 
     log.info("extract_persons(%s) → %d person(s)  [%.1fs]", url, len(persons), elapsed)
+    elastic.log_page(
+        url=url,
+        roiv_name=ctx.deps.known_roiv,
+        persons_found=len(persons),
+        duration_sec=elapsed,
+    )
 
     response: dict = {"count": len(raw), "persons": raw}
     if len(raw) == 0:
@@ -426,11 +433,16 @@ async def run_agent(
     )
     pipeline_elapsed = time.perf_counter() - pipeline_start
 
+    token_requests = token_input = token_output = token_total = None
     try:
         usage = result.usage()
+        token_requests = usage.requests
+        token_input    = usage.input_tokens
+        token_output   = usage.output_tokens
+        token_total    = usage.total_tokens
         log.info(
             "Token usage — requests: %d, in: %s, out: %s, total: %s",
-            usage.requests, usage.input_tokens, usage.output_tokens, usage.total_tokens,
+            token_requests, token_input, token_output, token_total,
         )
     except Exception as e:
         log.warning("Could not read token usage: %s", e)
@@ -450,4 +462,17 @@ async def run_agent(
         "Done. РОИВ: %s | Pages: %d | Persons: %d | Time: %s",
         deps.known_roiv or "?", len(deps.crawled_pages), len(merged), time_str,
     )
+
+    elastic.log_run(
+        start_url=start_url,
+        roiv_name=deps.known_roiv or "",
+        pages_crawled=len(deps.crawled_pages),
+        persons_found=len(merged),
+        duration_sec=pipeline_elapsed,
+        token_requests=token_requests,
+        token_input=token_input,
+        token_output=token_output,
+        token_total=token_total,
+    )
+
     return merged
