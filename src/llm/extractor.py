@@ -74,6 +74,7 @@ class PersonExtractor:
         persons: list[RoivDecisionMaker_v2] = []
         for raw in data.get("persons", []):
             try:
+                raw["parsing_url"] = source_url or None
                 persons.append(RoivDecisionMaker_v2.model_validate(raw))
             except ValidationError as e:
                 name = raw.get("person_full_name", "?")

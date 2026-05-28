@@ -13,6 +13,41 @@ def _precise_pad(phone: str, area_code: str) -> str:
     return phone
 
 
+def _validate_full_name(name: str) -> str:
+    """Reject abbreviated or non-standard FIO formats.
+
+    Rejects:
+    - Single initials as separate words: «А. И. Фролов» (split → «А.» «И.» «Фролов»)
+    - Compact multi-initial words: «Фролов А.И.» (split → «Фролов» «А.И.»)
+    - Names with only 1 word.
+
+    Accepts full names in any word order (we don't enforce Surname First).
+    """
+    stripped = name.strip()
+    if not stripped:
+        raise ValueError("person_full_name is empty")
+
+    words = stripped.split()
+    if len(words) < 2:
+        raise ValueError(f"person_full_name too short (only 1 word): {stripped!r}")
+
+    _single_initial = re.compile(r"^[А-ЯЁа-яёA-Za-z]\.?$")
+    _compact_initials = re.compile(r"^([А-ЯЁа-яёA-Za-z]\.)+[А-ЯЁа-яёA-Za-z]?$")
+
+    for word in words:
+        w = word.strip(".")  # strip surrounding dots before length check
+        if _single_initial.match(word):
+            raise ValueError(
+                f"person_full_name looks like an abbreviated name (initials): {stripped!r}"
+            )
+        if _compact_initials.match(word):
+            raise ValueError(
+                f"person_full_name looks like an abbreviated name (initials): {stripped!r}"
+            )
+
+    return stripped
+
+
 class RoivDecisionMaker_v2(BaseModel):
     """
     Сведения о конкретном должностном лице управленческого уровня,
@@ -34,6 +69,15 @@ class RoivDecisionMaker_v2(BaseModel):
     photo_url: Optional[str] = Field(None)
     person_bio: Optional[str] = Field(None)
     date_birth: Optional[str] = Field(None, description="YYYY-MM-DD или YYYY, только при явном биографическом маркере")
+    parsing_url: Optional[str] = Field(None, description="URL страницы, с которой извлечена запись")
+
+    @model_validator(mode="before")
+    @classmethod
+    def check_full_name(cls, data):
+        name = data.get("person_full_name", "") if isinstance(data, dict) else ""
+        if name:
+            _validate_full_name(name)
+        return data
 
     @model_validator(mode="after")
     def fill_phones(self, context: ValidationInfo):
