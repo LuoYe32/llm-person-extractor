@@ -25,6 +25,7 @@ Usage:
 
 import asyncio
 import json
+import time
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -246,7 +247,9 @@ async def crawl_site(ctx: RunContext[AgentDeps], start_url: str) -> str:
     def _crawl() -> list[Page]:
         return Crawler(relevance_workers=_crawler_workers()).crawl(start_url)
 
+    t0 = time.perf_counter()
     pages: list[Page] = await asyncio.to_thread(_crawl)
+    elapsed = time.perf_counter() - t0
     ctx.deps.crawled_pages = pages
     ctx.deps.site_crawled = True
 
@@ -254,7 +257,7 @@ async def crawl_site(ctx: RunContext[AgentDeps], start_url: str) -> str:
         {"url": p.url, "preview": (p.markdown or p.text)[:300]}
         for p in pages
     ]
-    print(f"[agent] crawl_site → {len(pages)} relevant page(s)")
+    print(f"[agent] crawl_site → {len(pages)} relevant page(s)  [{elapsed:.1f}s]")
     return _safe_json({"total": len(result), "pages": result})
 
 
@@ -290,9 +293,11 @@ async def extract_persons(ctx: RunContext[AgentDeps], url: str) -> str:
             return _safe_json({"count": 0, "error": f"failed to fetch {url}"})
         content = await asyncio.to_thread(html_to_markdown, html)
 
+    t0 = time.perf_counter()
     persons = await asyncio.to_thread(
         _extractor.extract, content, url, ctx.deps.known_roiv
     )
+    elapsed = time.perf_counter() - t0
 
     if not ctx.deps.known_roiv and persons:
         candidate = persons[0].roiv_full_name
@@ -303,7 +308,7 @@ async def extract_persons(ctx: RunContext[AgentDeps], url: str) -> str:
     raw = [p.model_dump(mode="json") for p in persons]
     ctx.deps.extracted_persons.extend(raw)
 
-    print(f"[agent] extract_persons({url}) → {len(persons)} person(s)")
+    print(f"[agent] extract_persons({url}) → {len(persons)} person(s)  [{elapsed:.1f}s]")
 
     response: dict = {"count": len(raw), "persons": raw}
     if len(raw) == 0:
@@ -411,10 +416,12 @@ async def run_agent(
     deps = AgentDeps(start_url=start_url, known_roiv=roiv_hint)
 
     print(f"\n[agent] Starting for: {start_url}\n")
+    pipeline_start = time.perf_counter()
     result = await agent.run(
         f"Извлеки информацию о сотрудниках с сайта: {start_url}",
         deps=deps,
     )
+    pipeline_elapsed = time.perf_counter() - pipeline_start
 
     try:
         usage = result.usage()
@@ -434,6 +441,10 @@ async def run_agent(
             print(f"[agent] Skipping invalid record: {e}")
 
     merged = merge_persons(all_persons)
+
+    mins, secs = divmod(int(pipeline_elapsed), 60)
+    time_str = f"{mins}m {secs}s" if mins else f"{secs}s"
     print(f"\n[agent] Done. РОИВ: {deps.known_roiv or '?'} | "
-          f"Pages: {len(deps.crawled_pages)} | Persons: {len(merged)}")
+          f"Pages: {len(deps.crawled_pages)} | Persons: {len(merged)} | "
+          f"Time: {time_str}")
     return merged
