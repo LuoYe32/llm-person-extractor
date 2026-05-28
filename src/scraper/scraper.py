@@ -10,6 +10,9 @@ from ..parsing.html_to_markdown import html_to_markdown
 from ..llm.extractor import PersonExtractor
 from .schemas import RoivDecisionMaker_v2
 from .merger import merge_persons
+from ..logger import get_logger
+
+log = get_logger(__name__)
 
 
 class Scraper:
@@ -22,33 +25,24 @@ class Scraper:
         pages: list[Page],
         roiv_hint: Optional[str] = None,
     ) -> list[RoivDecisionMaker_v2]:
-        """Extract persons from already-crawled Page objects.
-
-        Args:
-            pages: list of Page objects (text is pre-extracted by crawler).
-            roiv_hint: explicit ROIV name to use when it's not found in page text.
-                       If None, will be auto-detected from the first successful page.
-        """
+        """Extract persons from already-crawled Page objects."""
         all_persons: list[RoivDecisionMaker_v2] = []
-        known_roiv = roiv_hint  # grows as we discover ROIV names
+        known_roiv = roiv_hint
 
         for i, page in enumerate(pages, 1):
-            # Prefer markdown (structured) over plain text
             content = page.markdown or page.text
             persons = self.extractor.extract(
                 content,
                 source_url=page.url,
                 roiv_hint=known_roiv,
             )
-            print(f"[scrape] #{i}/{len(pages)} | {page.url}")
-            print(f"[scrape]   → {len(persons)} person(s) found")
+            log.info("#%d/%d | %d person(s) | %s", i, len(pages), len(persons), page.url)
 
-            # Auto-learn ROIV name from first successful extraction
             if not known_roiv and persons:
                 candidate = persons[0].roiv_full_name
                 if candidate:
                     known_roiv = candidate
-                    print(f"[scrape]   → РОИВ определён: '{known_roiv}'")
+                    log.info("РОИВ определён: '%s'", known_roiv)
 
             all_persons.extend(persons)
 
@@ -66,28 +60,27 @@ class Scraper:
         for i, url in enumerate(urls, 1):
             html = self.fetcher.fetch(url)
             if not html:
-                print(f"[scrape] #{i}/{len(urls)} | SKIP: failed to fetch | {url}")
+                log.warning("#%d/%d | SKIP: failed to fetch | %s", i, len(urls), url)
                 continue
 
             content = html_to_markdown(html) or extract_text(html)
             persons = self.extractor.extract(content, source_url=url, roiv_hint=known_roiv)
-            print(f"[scrape] #{i}/{len(urls)} | {url}")
-            print(f"[scrape]   → {len(persons)} person(s) found")
+            log.info("#%d/%d | %d person(s) | %s", i, len(urls), len(persons), url)
 
             if not known_roiv and persons:
                 candidate = persons[0].roiv_full_name
                 if candidate:
                     known_roiv = candidate
-                    print(f"[scrape]   → РОИВ определён: '{known_roiv}'")
+                    log.info("РОИВ определён: '%s'", known_roiv)
 
             all_persons.extend(persons)
 
         return self._finish(all_persons)
 
     def _finish(self, all_persons: list[RoivDecisionMaker_v2]) -> list[RoivDecisionMaker_v2]:
-        print(f"\n[scrape] Total before merge: {len(all_persons)}")
+        log.info("Total before merge: %d", len(all_persons))
         merged = merge_persons(all_persons)
-        print(f"[scrape] Total after merge:  {len(merged)}")
+        log.info("Total after merge:  %d", len(merged))
         return merged
 
     @staticmethod
@@ -97,4 +90,4 @@ class Scraper:
     @staticmethod
     def to_csv(persons: list[RoivDecisionMaker_v2], path: str) -> None:
         Scraper.to_dataframe(persons).to_csv(path, index=False)
-        print(f"[scrape] Saved {len(persons)} records → {path}")
+        log.info("Saved %d records → %s", len(persons), path)

@@ -4,6 +4,9 @@ import time
 
 from ..llm.client import get_llm
 from ..llm.prompts import RELEVANCE_PROMPT
+from ..logger import get_logger
+
+log = get_logger(__name__)
 
 _MAX_RETRIES = 3
 _RETRY_DELAY = 5
@@ -40,9 +43,9 @@ class RelevanceClassifier:
             except Exception as e:
                 last_exc = e
                 raw = getattr(response, "content", "?")[:200] if "response" in dir() else "?"
-                print(f"[relevance] attempt {attempt}/{_MAX_RETRIES} failed: {e!r} | raw={raw!r}")
+                log.warning("attempt %d/%d failed: %r | raw=%r", attempt, _MAX_RETRIES, e, raw)
                 if attempt < _MAX_RETRIES:
                     time.sleep(_RETRY_DELAY * attempt)
 
-        print(f"[relevance] all retries exhausted: {last_exc!r}")
+        log.error("all retries exhausted: %r", last_exc)
         return False, 0.0

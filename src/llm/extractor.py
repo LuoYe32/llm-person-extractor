@@ -7,6 +7,9 @@ from pydantic import ValidationError
 from .client import get_llm
 from .prompts import EXTRACTION_PROMPT
 from ..scraper.schemas import RoivDecisionMaker_v2
+from ..logger import get_logger
+
+log = get_logger(__name__)
 
 MAX_TEXT_CHARS = 8000
 
@@ -63,12 +66,12 @@ class PersonExtractor:
                 inp = usage.get("input_tokens", "?")
                 out = usage.get("output_tokens", "?")
                 total = usage.get("total_tokens", "?")
-                print(f"[extractor] tokens — in: {inp}, out: {out}, total: {total} | {source_url}")
+                log.debug("tokens — in: %s, out: %s, total: %s | %s", inp, out, total, source_url)
         except json.JSONDecodeError as e:
-            print(f"[extractor] JSON parse error ({source_url}): {e}")
+            log.error("JSON parse error (%s): %s", source_url, e)
             return []
         except Exception as e:
-            print(f"[extractor] LLM error ({source_url}): {e}")
+            log.error("LLM error (%s): %s", source_url, e)
             return []
 
         persons: list[RoivDecisionMaker_v2] = []
@@ -78,6 +81,6 @@ class PersonExtractor:
                 persons.append(RoivDecisionMaker_v2.model_validate(raw))
             except ValidationError as e:
                 name = raw.get("person_full_name", "?")
-                print(f"[extractor] Validation error for '{name}' ({source_url}): {e}")
+                log.warning("Validation error for '%s' (%s): %s", name, source_url, e)
 
         return persons

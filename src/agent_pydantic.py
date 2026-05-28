@@ -42,7 +42,10 @@ from .parsing.html_to_markdown import html_to_markdown
 from .llm.extractor import PersonExtractor
 from .scraper.schemas import RoivDecisionMaker_v2
 from .scraper.merger import merge_persons
+from .logger import get_logger
 from settings.settings import settings
+
+log = get_logger(__name__)
 
 
 def _crawler_workers() -> int:
@@ -221,7 +224,7 @@ def set_roiv_name(ctx: RunContext[AgentDeps], name: str) -> str:
     Example: set_roiv_name("Министерство цифрового развития Челябинской области")
     """
     ctx.deps.known_roiv = name.strip()
-    print(f"[agent] ✓ РОИВ установлен: '{ctx.deps.known_roiv}'")
+    log.info("РОИВ установлен: '%s'", ctx.deps.known_roiv)
     return _safe_json({"status": "ok", "roiv_name": ctx.deps.known_roiv})
 
 
@@ -241,7 +244,7 @@ async def crawl_site(ctx: RunContext[AgentDeps], start_url: str) -> str:
             {"url": p.url, "preview": (p.markdown or p.text)[:300]}
             for p in ctx.deps.crawled_pages
         ]
-        print(f"[agent] crawl_site (cached) → {len(result)} page(s)")
+        log.info("crawl_site (cached) → %d page(s)", len(result))
         return _safe_json({"total": len(result), "pages": result, "note": "cached"})
 
     def _crawl() -> list[Page]:
@@ -257,7 +260,7 @@ async def crawl_site(ctx: RunContext[AgentDeps], start_url: str) -> str:
         {"url": p.url, "preview": (p.markdown or p.text)[:300]}
         for p in pages
     ]
-    print(f"[agent] crawl_site → {len(pages)} relevant page(s)  [{elapsed:.1f}s]")
+    log.info("crawl_site → %d relevant page(s)  [%.1fs]", len(pages), elapsed)
     return _safe_json({"total": len(result), "pages": result})
 
 
@@ -303,12 +306,12 @@ async def extract_persons(ctx: RunContext[AgentDeps], url: str) -> str:
         candidate = persons[0].roiv_full_name
         if candidate:
             ctx.deps.known_roiv = candidate
-            print(f"[agent] РОИВ авто-определён: '{candidate}'")
+            log.info("РОИВ авто-определён: '%s'", candidate)
 
     raw = [p.model_dump(mode="json") for p in persons]
     ctx.deps.extracted_persons.extend(raw)
 
-    print(f"[agent] extract_persons({url}) → {len(persons)} person(s)  [{elapsed:.1f}s]")
+    log.info("extract_persons(%s) → %d person(s)  [%.1fs]", url, len(persons), elapsed)
 
     response: dict = {"count": len(raw), "persons": raw}
     if len(raw) == 0:
@@ -355,9 +358,9 @@ async def ask_user(ctx: RunContext[AgentDeps], question: str) -> str:
     The question will be printed to the terminal; the operator types the answer.
     Returns JSON: {"answer": "..."}
     """
-    print(f"\n[agent] ? Вопрос агента: {question}")
+    log.info("Вопрос агента: %s", question)
     answer = await asyncio.to_thread(input, "    Ваш ответ: ")
-    print()
+
     return _safe_json({"answer": answer.strip()})
 
 
@@ -373,18 +376,18 @@ async def run_extract_single(
 
     Returns a deduplicated list of extracted persons.
     """
-    print(f"\n[extract] Fetching: {url}")
+    log.info("Fetching: %s", url)
     html = await asyncio.to_thread(_fetcher.fetch, url)
     if not html:
-        print("[extract] Failed to fetch page.")
+        log.warning("Failed to fetch page: %s", url)
         return []
 
     content = await asyncio.to_thread(html_to_markdown, html)
     persons = await asyncio.to_thread(_extractor.extract, content, url, roiv_hint)
-    print(f"[extract] Found {len(persons)} person(s)")
+    log.info("Found %d person(s)", len(persons))
 
     merged = merge_persons(persons)
-    print(f"[extract] After merge: {len(merged)} person(s)")
+    log.info("After merge: %d person(s)", len(merged))
     return merged
 
 
@@ -397,11 +400,11 @@ async def run_discover_pages(
 
     Returns list of relevant Page objects.
     """
-    print(f"\n[discover] Crawling: {start_url}")
+    log.info("Crawling: %s", start_url)
     pages: list[Page] = await asyncio.to_thread(
         lambda: Crawler(relevance_workers=_crawler_workers()).crawl(start_url)
     )
-    print(f"[discover] Found {len(pages)} relevant page(s)")
+    log.info("Found %d relevant page(s)", len(pages))
     return pages
 
 
@@ -415,7 +418,7 @@ async def run_agent(
     """
     deps = AgentDeps(start_url=start_url, known_roiv=roiv_hint)
 
-    print(f"\n[agent] Starting for: {start_url}\n")
+    log.info("Starting for: %s", start_url)
     pipeline_start = time.perf_counter()
     result = await agent.run(
         f"Извлеки информацию о сотрудниках с сайта: {start_url}",
@@ -425,26 +428,26 @@ async def run_agent(
 
     try:
         usage = result.usage()
-        print(
-            f"\n[agent] Token usage - requests: {usage.requests}, "
-            f"in: {usage.input_tokens}, out: {usage.output_tokens}, "
-            f"total: {usage.total_tokens}"
+        log.info(
+            "Token usage — requests: %d, in: %s, out: %s, total: %s",
+            usage.requests, usage.input_tokens, usage.output_tokens, usage.total_tokens,
         )
     except Exception as e:
-        print(f"[agent] Could not read token usage: {e}")
+        log.warning("Could not read token usage: %s", e)
 
     all_persons: list[RoivDecisionMaker_v2] = []
     for raw in deps.extracted_persons:
         try:
             all_persons.append(RoivDecisionMaker_v2.model_validate(raw))
         except Exception as e:
-            print(f"[agent] Skipping invalid record: {e}")
+            log.warning("Skipping invalid record: %s", e)
 
     merged = merge_persons(all_persons)
 
     mins, secs = divmod(int(pipeline_elapsed), 60)
     time_str = f"{mins}m {secs}s" if mins else f"{secs}s"
-    print(f"\n[agent] Done. РОИВ: {deps.known_roiv or '?'} | "
-          f"Pages: {len(deps.crawled_pages)} | Persons: {len(merged)} | "
-          f"Time: {time_str}")
+    log.info(
+        "Done. РОИВ: %s | Pages: %d | Persons: %d | Time: %s",
+        deps.known_roiv or "?", len(deps.crawled_pages), len(merged), time_str,
+    )
     return merged

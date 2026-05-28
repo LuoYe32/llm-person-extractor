@@ -10,16 +10,22 @@ import asyncio
 import sys
 import time
 
+from src.logger import get_logger, setup_logging
+
+log = get_logger(__name__)
+
 
 def _banner() -> None:
     print()
     print("╔══════════════════════════════════════════════╗")
-    print("║             LLM Person Extractor             ║") #агента тут написать?
+    print("║             LLM Person Extractor             ║")
     print("╚══════════════════════════════════════════════╝")
     print()
 
 
 async def main() -> None:
+    setup_logging()
+
     if "--load" in sys.argv:
         await _load_mode()
         return
@@ -45,15 +51,15 @@ async def _load_mode() -> None:
     t0 = time.perf_counter()
     for i, page in enumerate(pages, 1):
         content = page.markdown or page.text
-        print(f"[main] #{i}/{len(pages)} | {page.url}")
+        log.info("#%d/%d | %s", i, len(pages), page.url)
         tp = time.perf_counter()
         persons = _extractor.extract(content, source_url=page.url, roiv_hint=roiv_hint)
         if not roiv_hint and persons:
             candidate = persons[0].roiv_full_name
             if candidate:
                 roiv_hint = candidate
-                print(f"[main]   РОИВ определён: '{roiv_hint}'")
-        print(f"[main]   → {len(persons)} person(s)  [{time.perf_counter() - tp:.1f}s]")
+                log.info("  РОИВ определён: '%s'", roiv_hint)
+        log.info("  → %d person(s)  [%.1fs]", len(persons), time.perf_counter() - tp)
         all_persons.extend(persons)
 
     merged = merge_persons(all_persons)
@@ -61,13 +67,12 @@ async def _load_mode() -> None:
     total_elapsed = time.perf_counter() - t0
     mins, secs = divmod(int(total_elapsed), 60)
     time_str = f"{mins}m {secs}s" if mins else f"{secs}s"
-    print(f"\n[main] ✓ Готово → result.csv  ({len(merged)} записей)  [{time_str}]")
+    log.info("✓ Готово → result.csv  (%d записей)  [%s]", len(merged), time_str)
 
 
 if __name__ == "__main__":
     asyncio.run(main())
 
 
-#todo: добавить логгер
 #todo: подключить эластик для отслеживания логов (количество собранных ссылок, персон и тп)
 # и токенов (дошборд в эластике)

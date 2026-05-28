@@ -3,6 +3,10 @@ from typing import Optional
 import requests
 from urllib.parse import urlparse, urlunparse
 
+from ..logger import get_logger
+
+log = get_logger(__name__)
+
 
 class Fetcher:
     def __init__(self, timeout: int = 30):
@@ -57,6 +61,6 @@ class Fetcher:
                 return self._decode(resp)
 
         except Exception as e:
-            print(e)
+            log.debug("fetch error for %s: %s", url, e)
 
         return None

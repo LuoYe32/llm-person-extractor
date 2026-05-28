@@ -27,6 +27,9 @@ from pydantic_ai import Agent, RunContext
 
 from .agent_pydantic import _build_model, _canonical_url, run_agent, run_extract_single, run_discover_pages
 from .scraper.scraper import Scraper
+from .logger import get_logger
+
+log = get_logger(__name__)
 
 RESULT_CSV = "result.csv"
 PAGES_CSV  = "discovered_pages.csv"
@@ -248,7 +251,7 @@ async def run_planner_loop() -> None:
                 message_history=history,
             )
         except Exception as e:
-            print(f"\n[planner] Ошибка: {e}\n")
+            log.error("Ошибка планировщика: %s", e)
             continue
 
         # Save conversation history for next turn
