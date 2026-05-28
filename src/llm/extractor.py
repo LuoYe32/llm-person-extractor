@@ -12,6 +12,7 @@ MAX_TEXT_CHARS = 8000
 
 
 def _strip_markdown(text: str) -> str:
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
     text = text.strip()
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*", "", text)
@@ -21,7 +22,7 @@ def _strip_markdown(text: str) -> str:
 
 class PersonExtractor:
     def __init__(self):
-        self.llm = get_llm()
+        self.llm = get_llm(json_mode=True)
 
     def extract(
         self,
@@ -57,7 +58,6 @@ class PersonExtractor:
             response = self.llm.invoke(prompt)
             content = _strip_markdown(response.content)
             data = json.loads(content)
-            # Log token usage if available (LangChain usage_metadata)
             usage = getattr(response, "usage_metadata", None)
             if usage:
                 inp = usage.get("input_tokens", "?")
