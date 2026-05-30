@@ -1,4 +1,7 @@
 from .schemas import RoivDecisionMaker_v2
+from ..logger import get_logger
+
+log = get_logger(__name__)
 
 
 def _normalize_name(name: str) -> str:
@@ -12,7 +15,7 @@ def merge_persons(persons: list[RoivDecisionMaker_v2]) -> list[RoivDecisionMaker
     only fill in fields that are still None.
     """
     groups: dict[str, dict] = {}
-    order: list[str] = []  # preserve insertion order
+    order: list[str] = []
 
     for person in persons:
         key = _normalize_name(person.person_full_name)
@@ -31,6 +34,6 @@ def merge_persons(persons: list[RoivDecisionMaker_v2]) -> list[RoivDecisionMaker
         try:
             result.append(RoivDecisionMaker_v2.model_validate(groups[key]))
         except Exception as e:
-            print(f"[merger] Skipping '{key}' after merge: {e}")
+            log.warning("Skipping '%s' after merge: %s", key, e)
 
     return result

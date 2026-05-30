@@ -7,11 +7,15 @@ from pydantic import ValidationError
 from .client import get_llm
 from .prompts import EXTRACTION_PROMPT
 from ..scraper.schemas import RoivDecisionMaker_v2
+from ..logger import get_logger
+
+log = get_logger(__name__)
 
 MAX_TEXT_CHARS = 8000
 
 
 def _strip_markdown(text: str) -> str:
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
     text = text.strip()
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*", "", text)
@@ -21,7 +25,7 @@ def _strip_markdown(text: str) -> str:
 
 class PersonExtractor:
     def __init__(self):
-        self.llm = get_llm()
+        self.llm = get_llm(json_mode=True)
 
     def extract(
         self,
@@ -57,19 +61,26 @@ class PersonExtractor:
             response = self.llm.invoke(prompt)
             content = _strip_markdown(response.content)
             data = json.loads(content)
+            usage = getattr(response, "usage_metadata", None)
+            if usage:
+                inp = usage.get("input_tokens", "?")
+                out = usage.get("output_tokens", "?")
+                total = usage.get("total_tokens", "?")
+                log.debug("tokens — in: %s, out: %s, total: %s | %s", inp, out, total, source_url)
         except json.JSONDecodeError as e:
-            print(f"[extractor] JSON parse error ({source_url}): {e}")
+            log.error("JSON parse error (%s): %s", source_url, e)
             return []
         except Exception as e:
-            print(f"[extractor] LLM error ({source_url}): {e}")
+            log.error("LLM error (%s): %s", source_url, e)
             return []
 
         persons: list[RoivDecisionMaker_v2] = []
         for raw in data.get("persons", []):
             try:
+                raw["parsing_url"] = source_url or None
                 persons.append(RoivDecisionMaker_v2.model_validate(raw))
             except ValidationError as e:
                 name = raw.get("person_full_name", "?")
-                print(f"[extractor] Validation error for '{name}' ({source_url}): {e}")
+                log.warning("Validation error for '%s' (%s): %s", name, source_url, e)
 
         return persons

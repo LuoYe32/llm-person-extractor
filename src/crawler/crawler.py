@@ -1,6 +1,8 @@
 import json
+import time
 from collections import deque, defaultdict
-from dataclasses import dataclass, field
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
@@ -11,14 +13,18 @@ from .anchor_filter import AnchorTextFilter, ScoredLink
 from ..parsing.trafilatura_parser import extract_text
 from ..parsing.html_to_markdown import html_to_markdown
 from ..classification.relevance import RelevanceClassifier
+from ..logger import get_logger
+from .. import elastic
+
+log = get_logger(__name__)
 
 
 @dataclass
 class Page:
     url: str
     html: str
-    text: str          # trafilatura plain text (used for relevance classifier)
-    markdown: str      # cleaned markdown of main content (used for LLM extraction)
+    text: str
+    markdown: str
     links: list[str]
     is_relevant: bool
     relevance_confidence: float
@@ -45,7 +51,7 @@ def save_pages(pages: list["Page"], path: str, include_html: bool = False) -> No
         for p in pages
     ]
     Path(path).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"[pages] Saved {len(pages)} pages → {path}")
+    log.info("Saved %d pages → %s", len(pages), path)
 
 
 def load_pages(path: str) -> list["Page"]:
@@ -63,7 +69,7 @@ def load_pages(path: str) -> list["Page"]:
         )
         for d in data
     ]
-    print(f"[pages] Loaded {len(pages)} pages ← {path}")
+    log.info("Loaded %d pages ← %s", len(pages), path)
     return pages
 
 
@@ -73,6 +79,7 @@ class Crawler:
         max_pages: int = 1500,
         max_depth: int = 5,
         anchor_threshold: float = -0.3,
+        relevance_workers: int = 5,
     ):
         self.fetcher = Fetcher()
         self.link_extractor = LinkExtractor()
@@ -81,13 +88,17 @@ class Crawler:
 
         self.max_pages = max_pages
         self.max_depth = max_depth
+        self.relevance_workers = relevance_workers
 
     def crawl(self, start_url: str, save_links_csv: str | None = "discovered_links.csv") -> list[Page]:
-        # --- Phase 1: BFS to collect all links with anchor texts ---
+        t_total = time.perf_counter()
+
+        t1 = time.perf_counter()
         url_to_html, url_to_anchors = self._collect_links(start_url)
-        print(
-            f"\n[Phase 1 done] visited={len(url_to_html)} pages, "
-            f"discovered={len(url_to_anchors)} unique URLs\n"
+        phase1_sec = time.perf_counter() - t1
+        log.info(
+            "[Phase 1 done] visited=%d pages, discovered=%d unique URLs  [%.1fs]",
+            len(url_to_html), len(url_to_anchors), phase1_sec,
         )
 
         if save_links_csv:
@@ -101,56 +112,91 @@ class Crawler:
                 }
                 for s in scored_all
             ]).to_csv(save_links_csv, index=False)
-            print(f"[Phase 1] Links saved → {save_links_csv}")
+            log.info("[Phase 1] Links saved → %s", save_links_csv)
 
-        # --- Phase 2: filter by anchor text / URL path ---
+        t2 = time.perf_counter()
         scored = self.anchor_filter.filter(url_to_anchors)
         candidates = [s for s in scored if s.keep]
         discarded = [s for s in scored if not s.keep]
+        phase2_sec = time.perf_counter() - t2
 
-        print(f"[Phase 2 done] kept={len(candidates)}, discarded={len(discarded)}")
-        self._print_filter_summary(candidates, discarded)
+        log.info("[Phase 2 done] kept=%d, discarded=%d  [%.2fs]", len(candidates), len(discarded), phase2_sec)
+        self._log_filter_summary(candidates, discarded)
 
-        # --- Phase 3: trafilatura + LLM relevance check ---
         pages: list[Page] = []
         skipped_no_html: list[str] = []
-        i = 0
-        for scored_link in candidates:
-            i += 1
+        total = len(candidates)
+        completed = 0
+
+        def _check_one(scored_link, idx: int):
+            """Fetch HTML (or use cache), extract text, call LLM relevance check."""
             url = scored_link.url
             in_cache = url in url_to_html
             html = url_to_html.get(url) or self.fetcher.fetch(url)
             if not html:
-                skipped_no_html.append(url)
                 source = "cache" if in_cache else "refetch"
-                print(f"[LLM] #{i} | SKIP no html ({source}) | {url}")
-                continue
+                return url, None, None, None, f"SKIP no html ({source})"
 
             text = extract_text(html)
             is_rel, conf = self.relevance.is_relevant(text)
-            print(f"[LLM] #{i} | {url} | rel={is_rel} conf={conf:.2f}")
+            return url, html, text, (is_rel, conf), None
 
-            if is_rel and conf >= 0.92: #todo: to attrs
-                raw_links = self.link_extractor.extract_links(html, url)
-                same_domain = self.link_extractor.filter_same_domain(raw_links, url)
-                pages.append(Page(
-                    url=url,
-                    html=html,
-                    text=text,
-                    markdown=html_to_markdown(html),
-                    links=[u for u, _, _ in same_domain],
-                    is_relevant=True,
-                    relevance_confidence=conf,
-                ))
+        t3 = time.perf_counter()
+        log.info("[Phase 3] Checking %d candidates with %d workers...", total, self.relevance_workers)
+        with ThreadPoolExecutor(max_workers=self.relevance_workers) as pool:
+            futures = {
+                pool.submit(_check_one, sl, i): (sl, i)
+                for i, sl in enumerate(candidates, 1)
+            }
+            for future in as_completed(futures):
+                completed += 1
+                url, html, text, rel_result, skip_reason = future.result()
+
+                if skip_reason:
+                    skipped_no_html.append(url)
+                    log.debug("[LLM] %d/%d | %s | %s", completed, total, skip_reason, url)
+                    continue
+
+                is_rel, conf = rel_result
+                log.debug("[LLM] %d/%d | rel=%s conf=%.2f | %s", completed, total, is_rel, conf, url)
+
+                if is_rel and conf >= 0.92:
+                    raw_links = self.link_extractor.extract_links(html, url)
+                    same_domain = self.link_extractor.filter_same_domain(raw_links, url)
+                    pages.append(Page(
+                        url=url,
+                        html=html,
+                        text=text,
+                        markdown=html_to_markdown(html),
+                        links=[u for u, _, _ in same_domain],
+                        is_relevant=True,
+                        relevance_confidence=conf,
+                    ))
+
+        phase3_sec = time.perf_counter() - t3
+        total_sec = time.perf_counter() - t_total
 
         if skipped_no_html:
-            print(f"\n[Phase 3] Skipped {len(skipped_no_html)} URLs (no html):")
+            log.warning("[Phase 3] Skipped %d URLs (no html)", len(skipped_no_html))
             for u in skipped_no_html:
-                print(f"  {u}")
-        print(f"\n[Phase 3 done] relevant pages found: {len(pages)}")
-        return pages
+                log.debug("  skipped: %s", u)
+        log.info("[Phase 3 done] relevant pages found: %d  [%.1fs]", len(pages), phase3_sec)
 
-    # ------------------------------------------------------------------
+        elastic.log_crawl(
+            start_url=start_url,
+            pages_visited=len(url_to_html),
+            links_discovered=len(url_to_anchors),
+            candidates_kept=len(candidates),
+            candidates_discarded=len(discarded),
+            relevant_pages=len(pages),
+            skipped_no_html=len(skipped_no_html),
+            duration_sec=total_sec,
+            phase1_sec=phase1_sec,
+            phase2_sec=phase2_sec,
+            phase3_sec=phase3_sec,
+        )
+
+        return pages
 
     def _collect_links(
         self, start_url: str
@@ -161,7 +207,7 @@ class Crawler:
 
         url_to_html: dict[str, str] = {}
         url_to_anchors: defaultdict[str, list[str]] = defaultdict(list)
-        url_to_anchors[start_url]  # ensure start URL appears in the map
+        url_to_anchors[start_url]
 
         while queue and len(visited) < self.max_pages:
             url, depth = queue.popleft()
@@ -177,7 +223,7 @@ class Crawler:
             url_to_html[url] = html
 
             if depth >= self.max_depth:
-                print(f"[collect] {url} | depth limit reached")
+                log.debug("[collect] depth limit reached | %s", url)
                 continue
 
             raw_links = self.link_extractor.extract_links(html, url)
@@ -188,25 +234,24 @@ class Crawler:
                 if anchor_text:
                     url_to_anchors[child_url].append(anchor_text)
                 else:
-                    url_to_anchors[child_url]  # register without anchor
+                    url_to_anchors[child_url]
                 if child_url not in visited:
                     queue.append((child_url, depth + 1))
                     new_count += 1
 
-            print(f"[collect] {url} | depth={depth} | links={len(same_domain)} | new={new_count}")
+            log.info("[collect] depth=%d | links=%d | new=%d | %s", depth, len(same_domain), new_count, url)
 
         return url_to_html, dict(url_to_anchors)
 
-    def _print_filter_summary(
+    def _log_filter_summary(
         self, candidates: list[ScoredLink], discarded: list[ScoredLink]
     ) -> None:
-        print("\n  Top candidates (kept):")
+        log.debug("  Top candidates (kept):")
         for s in candidates[:15]:
             anchors_preview = ", ".join(s.anchor_texts[:2]) or "—"
-            print(f"    [+{s.score:+.2f}] {s.url}  |  anchor: '{anchors_preview}'")
+            log.debug("    [%+.2f] %s  |  anchor: '%s'", s.score, s.url, anchors_preview)
 
-        print("\n  Discarded (sample):")
+        log.debug("  Discarded (sample):")
         for s in sorted(discarded, key=lambda x: x.score)[:10]:
             anchors_preview = ", ".join(s.anchor_texts[:2]) or "—"
-            print(f"    [{s.score:+.2f}] {s.url}  |  anchor: '{anchors_preview}'")
-        print()
+            log.debug("    [%+.2f] %s  |  anchor: '%s'", s.score, s.url, anchors_preview)

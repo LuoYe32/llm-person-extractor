@@ -23,7 +23,6 @@ class LinkExtractor:
         Priority 1 — all other links.
         """
         soup = BeautifulSoup(html, "html.parser")
-        # url -> (anchor_text, priority); keep highest priority per url
         links: dict[str, tuple[str, int]] = {}
 
         def add_link(href: str, anchor: str, priority: int) -> None:

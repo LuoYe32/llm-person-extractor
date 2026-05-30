@@ -3,6 +3,10 @@ from typing import Optional
 import requests
 from urllib.parse import urlparse, urlunparse
 
+from ..logger import get_logger
+
+log = get_logger(__name__)
+
 
 class Fetcher:
     def __init__(self, timeout: int = 30):
@@ -14,19 +18,14 @@ class Fetcher:
 
     @staticmethod
     def _decode(resp: requests.Response) -> str:
-        """Decode response body, decompressing gzip manually if needed.
-
-        Some servers return gzip-compressed content without setting
-        Content-Encoding, so requests won't decompress automatically.
-        """
+        """Decode response body, decompressing gzip manually if needed."""
         raw: bytes = resp.content
 
-        # gzip magic bytes: 0x1f 0x8b
         if raw[:2] == b"\x1f\x8b":
             try:
                 raw = gzip.decompress(raw)
             except Exception:
-                pass  # not valid gzip after all — use as-is
+                pass
 
         encoding = resp.encoding or resp.apparent_encoding or "utf-8"
         return raw.decode(encoding, errors="replace")
@@ -34,7 +33,7 @@ class Fetcher:
     def fetch(self, url: str) -> Optional[str]:
         headers = {
             "User-Agent": "Mozilla/5.0 (compatible; LLM-Agent/1.0)",
-            "Accept-Encoding": "identity",  # ask server NOT to compress
+            "Accept-Encoding": "identity",
         }
 
         try:
@@ -57,6 +56,6 @@ class Fetcher:
                 return self._decode(resp)
 
         except Exception as e:
-            print(e)
+            log.debug("fetch error for %s: %s", url, e)
 
         return None

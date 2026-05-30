@@ -1,13 +1,3 @@
-"""
-Convert a full page HTML to a compact Markdown representation
-of its *main content* only.
-
-Strategy:
-1. Remove all noise tags (scripts, styles, nav, header, footer, …).
-2. Find the most specific "content root" element on the page.
-3. Convert that subtree to Markdown with markdownify.
-"""
-
 from bs4 import BeautifulSoup, Tag
 from markdownify import markdownify as md
 
@@ -39,7 +29,7 @@ _CONTENT_SELECTORS = [
     "#content",
     "#main",
     ".container",
-    "body",          # last resort
+    "body",
 ]
 
 
