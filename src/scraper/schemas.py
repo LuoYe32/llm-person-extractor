@@ -35,7 +35,7 @@ def _validate_full_name(name: str) -> str:
     _compact_initials = re.compile(r"^([А-ЯЁа-яёA-Za-z]\.)+[А-ЯЁа-яёA-Za-z]?$")
 
     for word in words:
-        w = word.strip(".")  # strip surrounding dots before length check
+        w = word.strip(".")
         if _single_initial.match(word):
             raise ValueError(
                 f"person_full_name looks like an abbreviated name (initials): {stripped!r}"

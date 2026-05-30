@@ -1,22 +1,3 @@
-"""
-Planner agent — conversational front-end.
-
-The user describes what they need in natural language.
-The planner interprets the intent and delegates to one of three executor tools:
-
-  full_analysis(url, roiv_hint?)   → crawl + extract all persons  (Mode 1)
-  extract_page(url, roiv_hint?)    → extract from a single page   (Mode 2)
-  discover_pages(url)              → find relevant pages, no extract (Mode 3)
-
-The planner keeps conversation history across turns, so the user can ask
-follow-up questions, correct mistakes, or request another run.
-
-Usage:
-    import asyncio
-    from src.planner import run_planner_loop
-    asyncio.run(run_planner_loop())
-"""
-
 import json
 from dataclasses import dataclass, field
 from typing import Optional
@@ -24,6 +5,7 @@ from typing import Optional
 import pandas as pd
 from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext
+from pydantic_ai.usage import UsageLimits
 
 from .agent_pydantic import _build_model, _canonical_url, run_agent, run_extract_single, run_discover_pages
 from .scraper.scraper import Scraper
@@ -35,24 +17,21 @@ RESULT_CSV = "result.csv"
 PAGES_CSV  = "discovered_pages.csv"
 
 
-# ── State & result ────────────────────────────────────────────────────────────
-
 @dataclass
 class PlannerDeps:
-    last_result_file: Optional[str] = None          # path to the most recently saved CSV
-    completed_tasks: set[str] = field(default_factory=set)  # dedup: "tool:canonical_url"
+    last_result_file: Optional[str] = None
+    completed_tasks: set[str] = field(default_factory=set)
 
 
 class PlannerReply(BaseModel):
-    message: str   # conversational response shown to the user
+    message: str
 
-
-# ── Agent ─────────────────────────────────────────────────────────────────────
 
 planner: Agent[PlannerDeps, PlannerReply] = Agent(
     model=_build_model(),
     deps_type=PlannerDeps,
     output_type=PlannerReply,
+    retries=5,
     system_prompt="""
 Ты — умный ассистент для извлечения информации о сотрудниках
 с сайтов региональных органов исполнительной власти (РОИВ) России.
@@ -92,8 +71,6 @@ planner: Agent[PlannerDeps, PlannerReply] = Agent(
 """,
 )
 
-
-# ── Tools ─────────────────────────────────────────────────────────────────────
 
 @planner.tool
 async def full_analysis(
@@ -217,8 +194,6 @@ async def discover_pages(
     }, ensure_ascii=False)
 
 
-# ── Conversation loop ─────────────────────────────────────────────────────────
-
 async def run_planner_loop() -> None:
     """Start an interactive conversation loop with the planner agent."""
     from pydantic_ai.messages import ModelMessage
@@ -230,7 +205,6 @@ async def run_planner_loop() -> None:
     print("(введите 'выход' для завершения)\n")
 
     while True:
-        # ── Read user input ──────────────────────────────────────────────────
         try:
             user_input = input("Вы: ").strip()
         except (EOFError, KeyboardInterrupt):
@@ -243,18 +217,17 @@ async def run_planner_loop() -> None:
             print("До свидания!")
             break
 
-        # ── Run planner (with full conversation history) ─────────────────────
         try:
             result = await planner.run(
                 user_input,
                 deps=deps,
                 message_history=history,
+                usage_limits=UsageLimits(request_limit=2000),
             )
         except Exception as e:
             log.error("Ошибка планировщика: %s", e)
             continue
 
-        # Save conversation history for next turn
         history = result.all_messages()
 
         print(f"\nАссистент: {result.output.message}\n")

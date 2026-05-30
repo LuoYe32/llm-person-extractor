@@ -1,11 +1,3 @@
-"""
-Entry point.
-
-Run modes:
-    python -m src.main          # conversational planner (default)
-    python -m src.main --load   # debug: skip crawl, load pages.json, then extract
-"""
-
 import asyncio
 import sys
 import time
@@ -26,14 +18,18 @@ def _banner() -> None:
 async def main() -> None:
     setup_logging()
 
-    if "--load" in sys.argv:
-        await _load_mode()
-        return
+    try:
+        if "--load" in sys.argv:
+            await _load_mode()
+            return
 
-    _banner()
+        _banner()
 
-    from src.planner import run_planner_loop
-    await run_planner_loop()
+        from src.planner import run_planner_loop
+        await run_planner_loop()
+    finally:
+        from src import elastic
+        elastic.stop()
 
 
 async def _load_mode() -> None:

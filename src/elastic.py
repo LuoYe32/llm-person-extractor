@@ -10,9 +10,10 @@ from settings.settings import settings
 
 
 _P = settings.ELASTICSEARCH_INDEX_PREFIX
-INDEX_LOGS  = f"{_P}-logs"
-INDEX_RUNS  = f"{_P}-runs"
-INDEX_PAGES = f"{_P}-pages"
+INDEX_LOGS   = f"{_P}-logs"
+INDEX_RUNS   = f"{_P}-runs"
+INDEX_PAGES  = f"{_P}-pages"
+INDEX_CRAWLS = f"{_P}-crawls"
 
 _send_queue: "queue.Queue[Optional[dict]]" = queue.Queue(maxsize=10_000)
 _worker_thread: Optional[threading.Thread] = None
@@ -97,6 +98,20 @@ def start() -> None:
         _worker_thread.start()
 
 
+def stop(timeout: float = 10.0) -> None:
+    """Flush remaining docs and shut down the sender thread (call before exit)."""
+    global _worker_thread
+    if not _enabled():
+        return
+    if _worker_thread is None or not _worker_thread.is_alive():
+        return
+    try:
+        _send_queue.put(None, timeout=2.0)   # sentinel → graceful stop
+        _worker_thread.join(timeout=timeout)
+    except Exception:
+        pass
+
+
 def _enqueue(index: str, doc: dict) -> None:
     if not _enabled():
         return
@@ -147,6 +162,36 @@ def log_page(
         "roiv_name":     roiv_name,
         "persons_found": persons_found,
         "duration_sec":  round(duration_sec, 2),
+    })
+
+
+def log_crawl(
+    *,
+    start_url: str,
+    pages_visited: int,
+    links_discovered: int,
+    candidates_kept: int,
+    candidates_discarded: int,
+    relevant_pages: int,
+    skipped_no_html: int,
+    duration_sec: float,
+    phase1_sec: float,
+    phase2_sec: float,
+    phase3_sec: float,
+) -> None:
+    """Record a completed crawl run in ES."""
+    _enqueue(INDEX_CRAWLS, {
+        "start_url":            start_url,
+        "pages_visited":        pages_visited,
+        "links_discovered":     links_discovered,
+        "candidates_kept":      candidates_kept,
+        "candidates_discarded": candidates_discarded,
+        "relevant_pages":       relevant_pages,
+        "skipped_no_html":      skipped_no_html,
+        "duration_sec":         round(duration_sec, 1),
+        "phase1_sec":           round(phase1_sec, 1),
+        "phase2_sec":           round(phase2_sec, 2),
+        "phase3_sec":           round(phase3_sec, 1),
     })
 
 

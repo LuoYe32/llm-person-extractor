@@ -27,9 +27,10 @@ class Settings(BaseSettings):
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
     DEEPSEEK_MODEL: str = "deepseek-v4-flash"
 
-    # Elasticsearch (optional — leave blank to disable)
-    ELASTICSEARCH_URL: Optional[str] = None          # e.g. "http://localhost:9200"
+    # Elasticsearch / Kibana (optional — leave blank to disable)
+    ELASTICSEARCH_URL: Optional[str] = None
     ELASTICSEARCH_INDEX_PREFIX: str = "llm-extractor"
+    KIBANA_URL: Optional[str] = None
 
     # Links
     SEED_URL: Optional[str] = "http://newhq.b-edu.ru/o-departamente/rukovodstvo/"

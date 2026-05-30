@@ -1,4 +1,5 @@
 import json
+import time
 from collections import deque, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from ..parsing.trafilatura_parser import extract_text
 from ..parsing.html_to_markdown import html_to_markdown
 from ..classification.relevance import RelevanceClassifier
 from ..logger import get_logger
+from .. import elastic
 
 log = get_logger(__name__)
 
@@ -89,10 +91,14 @@ class Crawler:
         self.relevance_workers = relevance_workers
 
     def crawl(self, start_url: str, save_links_csv: str | None = "discovered_links.csv") -> list[Page]:
+        t_total = time.perf_counter()
+
+        t1 = time.perf_counter()
         url_to_html, url_to_anchors = self._collect_links(start_url)
+        phase1_sec = time.perf_counter() - t1
         log.info(
-            "[Phase 1 done] visited=%d pages, discovered=%d unique URLs",
-            len(url_to_html), len(url_to_anchors),
+            "[Phase 1 done] visited=%d pages, discovered=%d unique URLs  [%.1fs]",
+            len(url_to_html), len(url_to_anchors), phase1_sec,
         )
 
         if save_links_csv:
@@ -108,11 +114,13 @@ class Crawler:
             ]).to_csv(save_links_csv, index=False)
             log.info("[Phase 1] Links saved → %s", save_links_csv)
 
+        t2 = time.perf_counter()
         scored = self.anchor_filter.filter(url_to_anchors)
         candidates = [s for s in scored if s.keep]
         discarded = [s for s in scored if not s.keep]
+        phase2_sec = time.perf_counter() - t2
 
-        log.info("[Phase 2 done] kept=%d, discarded=%d", len(candidates), len(discarded))
+        log.info("[Phase 2 done] kept=%d, discarded=%d  [%.2fs]", len(candidates), len(discarded), phase2_sec)
         self._log_filter_summary(candidates, discarded)
 
         pages: list[Page] = []
@@ -133,6 +141,7 @@ class Crawler:
             is_rel, conf = self.relevance.is_relevant(text)
             return url, html, text, (is_rel, conf), None
 
+        t3 = time.perf_counter()
         log.info("[Phase 3] Checking %d candidates with %d workers...", total, self.relevance_workers)
         with ThreadPoolExecutor(max_workers=self.relevance_workers) as pool:
             futures = {
@@ -164,11 +173,29 @@ class Crawler:
                         relevance_confidence=conf,
                     ))
 
+        phase3_sec = time.perf_counter() - t3
+        total_sec = time.perf_counter() - t_total
+
         if skipped_no_html:
             log.warning("[Phase 3] Skipped %d URLs (no html)", len(skipped_no_html))
             for u in skipped_no_html:
                 log.debug("  skipped: %s", u)
-        log.info("[Phase 3 done] relevant pages found: %d", len(pages))
+        log.info("[Phase 3 done] relevant pages found: %d  [%.1fs]", len(pages), phase3_sec)
+
+        elastic.log_crawl(
+            start_url=start_url,
+            pages_visited=len(url_to_html),
+            links_discovered=len(url_to_anchors),
+            candidates_kept=len(candidates),
+            candidates_discarded=len(discarded),
+            relevant_pages=len(pages),
+            skipped_no_html=len(skipped_no_html),
+            duration_sec=total_sec,
+            phase1_sec=phase1_sec,
+            phase2_sec=phase2_sec,
+            phase3_sec=phase3_sec,
+        )
+
         return pages
 
     def _collect_links(
@@ -207,12 +234,12 @@ class Crawler:
                 if anchor_text:
                     url_to_anchors[child_url].append(anchor_text)
                 else:
-                    url_to_anchors[child_url]  # register without anchor
+                    url_to_anchors[child_url]
                 if child_url not in visited:
                     queue.append((child_url, depth + 1))
                     new_count += 1
 
-            log.debug("[collect] depth=%d | links=%d | new=%d | %s", depth, len(same_domain), new_count, url)
+            log.info("[collect] depth=%d | links=%d | new=%d | %s", depth, len(same_domain), new_count, url)
 
         return url_to_html, dict(url_to_anchors)
 

@@ -1,28 +1,3 @@
-"""
-PersonExtractorAgent - pydantic-ai tool-use agent with Ollama / OpenRouter.
-
-The LLM decides:
-  - which pages to extract persons from (using crawl results)
-  - when to stop
-  - whether to ask the user for clarification
-
-Tools:
-  get_page_content(url)       → read page markdown without extracting (for recon)
-  set_roiv_name(name)         → explicitly set the known ROIV name
-  crawl_site(url)             → runs the full Crawler pipeline, returns relevant page URLs
-  extract_persons(url)        → extracts persons from a specific URL
-  get_extraction_status()     → summary of progress so far
-  ask_user(question)          → ask the operator a question and get a reply
-
-Usage:
-    import asyncio
-    from src.agent_pydantic import run_agent
-
-    persons = asyncio.run(run_agent("https://kkglo.lenobl.ru/"))
-    for p in persons:
-        print(p.person_full_name, p.position)
-"""
-
 import asyncio
 import json
 import time
@@ -31,6 +6,7 @@ from typing import Optional
 
 from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext
+from pydantic_ai.usage import UsageLimits
 from pydantic_ai.models.ollama import OllamaModel
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.ollama import OllamaProvider
@@ -117,6 +93,7 @@ class AgentDeps:
     extracted_persons: list[dict] = field(default_factory=list)    # filled by extract_persons
     extracted_urls: set[str] = field(default_factory=set)          # dedup guard
     known_roiv: Optional[str] = None                               # set via set_roiv_name or auto-learned
+    roiv_locked: bool = False                                      # True after first set_roiv_name call
     zero_result_urls: list[str] = field(default_factory=list)      # pages that returned 0 persons
     site_crawled: bool = False                                     # crawl_site already ran
 
@@ -132,6 +109,7 @@ agent: Agent[AgentDeps, AgentResult] = Agent(
     model=model,
     deps_type=AgentDeps,
     output_type=AgentResult,
+    retries=5,
     system_prompt="""
 Ты - интеллектуальный агент для извлечения информации о сотрудниках
 с сайтов региональных органов исполнительной власти (РОИВ) России.
@@ -148,9 +126,8 @@ agent: Agent[AgentDeps, AgentResult] = Agent(
   - Вызови crawl_site(start_url) - получишь список релевантных страниц.
 
 Шаг 3. ИЗВЛЕКАЙ ДАННЫЕ
-  - Для каждой страницы из списка вызови extract_persons(url).
-  - Если страница вернула 0 человек - вызови get_page_content(url), разберись почему,
-    и при необходимости повтори extract_persons ещё раз.
+  - Вызови extract_all_crawled_pages() — один вызов обработает все страницы параллельно.
+  - НЕ вызывай extract_persons вручную для каждой страницы — только extract_all_crawled_pages.
 
 Шаг 4. ПРОВЕРЬ ИТОГ
   - Вызови get_extraction_status() - убедись, что все страницы обработаны.
@@ -160,9 +137,10 @@ agent: Agent[AgentDeps, AgentResult] = Agent(
   - Верни AgentResult: roiv_name, persons_found, processed_urls, message с кратким итогом.
 
 --- ПРАВИЛА ---
-- Не пропускай страницы из результата crawl_site - обработай каждую.
-- Не вызывай extract_persons для одного URL дважды.
-- Всегда устанавливай РОИВ до начала массового extract_persons.
+- set_roiv_name вызывается РОВНО ОДИН РАЗ. Получил "status: ok" — сразу переходи к следующему шагу.
+- Если set_roiv_name вернул "status: already_set" — немедленно вызывай extract_all_crawled_pages().
+- extract_all_crawled_pages() вызывается РОВНО ОДИН РАЗ — он сам обработает все страницы.
+- НЕ вызывай extract_persons вручную — только через extract_all_crawled_pages.
 - Если что-то непонятно (сайт нестандартный, РОИВ не определяется) - спроси пользователя.
 """,
 )
@@ -177,7 +155,6 @@ def _safe_json(obj, **kwargs) -> str:
     """
     def _clean(o):
         if isinstance(o, str):
-            # encode to utf-8 replacing surrogates, then decode back
             return o.encode("utf-8", errors="replace").decode("utf-8")
         if isinstance(o, dict):
             return {_clean(k): _clean(v) for k, v in o.items()}
@@ -218,13 +195,24 @@ async def get_page_content(ctx: RunContext[AgentDeps], url: str) -> str:
 def set_roiv_name(ctx: RunContext[AgentDeps], name: str) -> str:
     """Set the full official name of the ROIV (government body) being processed.
 
-    Call this as soon as you identify the ROIV name (e.g. from the homepage title
-    or site header). This name will be injected as context into every subsequent
-    extract_persons call, ensuring all sub-pages get the correct ROIV attribution.
+    Call this ONCE as soon as you identify the ROIV name (e.g. from the homepage
+    title or site header). After the first call the name is locked — do NOT call
+    this tool again. Proceed immediately to crawl_site / extract_persons.
 
     Example: set_roiv_name("Министерство цифрового развития Челябинской области")
     """
+    if ctx.deps.roiv_locked:
+        log.debug("set_roiv_name called again (ignored): '%s'", name)
+        return _safe_json({
+            "status": "already_set",
+            "roiv_name": ctx.deps.known_roiv,
+            "instruction": (
+                "РОИВ уже установлен. НЕ вызывай set_roiv_name повторно. "
+                "Переходи к extract_persons для каждой страницы из crawl_site."
+            ),
+        })
     ctx.deps.known_roiv = name.strip()
+    ctx.deps.roiv_locked = True
     log.info("РОИВ установлен: '%s'", ctx.deps.known_roiv)
     return _safe_json({"status": "ok", "roiv_name": ctx.deps.known_roiv})
 
@@ -331,6 +319,79 @@ async def extract_persons(ctx: RunContext[AgentDeps], url: str) -> str:
 
 
 @agent.tool
+async def extract_all_crawled_pages(ctx: RunContext[AgentDeps]) -> str:
+    """Extract persons from ALL pages collected by crawl_site in one batch call.
+
+    Call this ONCE after crawl_site() and set_roiv_name() are done.
+    Processes all pages in parallel — do NOT loop over extract_persons manually.
+    Returns a summary with total persons found.
+    """
+    if not ctx.deps.crawled_pages:
+        return _safe_json({"error": "crawl_site has not been called yet. Call crawl_site first."})
+
+    pending = [p for p in ctx.deps.crawled_pages if p.url not in ctx.deps.extracted_urls]
+    if not pending:
+        return _safe_json({
+            "status": "already_done",
+            "persons_found": len(ctx.deps.extracted_persons),
+        })
+
+    log.info("extract_all_crawled_pages: processing %d pages...", len(pending))
+    workers = _crawler_workers()
+
+    async def _process_one(page: "Page") -> int:
+        canonical = _canonical_url(page.url)
+        if canonical in ctx.deps.extracted_urls:
+            return 0
+        ctx.deps.extracted_urls.add(canonical)
+
+        content = page.markdown or page.text
+        t0 = time.perf_counter()
+        persons = await asyncio.to_thread(
+            _extractor.extract, content, page.url, ctx.deps.known_roiv
+        )
+        elapsed = time.perf_counter() - t0
+
+        if not ctx.deps.known_roiv and persons:
+            candidate = persons[0].roiv_full_name
+            if candidate:
+                ctx.deps.known_roiv = candidate
+                log.info("РОИВ авто-определён: '%s'", candidate)
+
+        raw = [p.model_dump(mode="json") for p in persons]
+        ctx.deps.extracted_persons.extend(raw)
+        if not raw:
+            ctx.deps.zero_result_urls.append(page.url)
+        log.info("  [%s] → %d person(s)  [%.1fs]", page.url, len(raw), elapsed)
+        elastic.log_page(
+            url=page.url,
+            roiv_name=ctx.deps.known_roiv,
+            persons_found=len(raw),
+            duration_sec=elapsed,
+        )
+        return len(raw)
+
+    sem = asyncio.Semaphore(workers)
+
+    async def _bounded(page):
+        async with sem:
+            return await _process_one(page)
+
+    results = await asyncio.gather(*[_bounded(p) for p in pending])
+    total_persons = sum(results)
+    log.info(
+        "extract_all_crawled_pages done: %d pages, %d persons total",
+        len(pending), total_persons,
+    )
+    return _safe_json({
+        "status": "done",
+        "pages_processed": len(pending),
+        "persons_found": total_persons,
+        "zero_result_pages": len(ctx.deps.zero_result_urls),
+    })
+
+
+@agent.tool
 def get_extraction_status(ctx: RunContext[AgentDeps]) -> str:
     """Return a progress summary: pages crawled, pages processed, persons found.
 
@@ -430,6 +491,7 @@ async def run_agent(
     result = await agent.run(
         f"Извлеки информацию о сотрудниках с сайта: {start_url}",
         deps=deps,
+        usage_limits=UsageLimits(request_limit=1000),
     )
     pipeline_elapsed = time.perf_counter() - pipeline_start
 

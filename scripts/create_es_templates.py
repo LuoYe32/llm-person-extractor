@@ -56,6 +56,23 @@ TEMPLATES = {
             "exception":  {"type": "text"},
         }}},
     },
+    "crawls": {
+        "index_patterns": [f"{PREFIX}-crawls*"],
+        "template": {"mappings": {"properties": {
+            "@timestamp":            {"type": "date"},
+            "start_url":             {"type": "keyword"},
+            "pages_visited":         {"type": "integer"},
+            "links_discovered":      {"type": "integer"},
+            "candidates_kept":       {"type": "integer"},
+            "candidates_discarded":  {"type": "integer"},
+            "relevant_pages":        {"type": "integer"},
+            "skipped_no_html":       {"type": "integer"},
+            "duration_sec":          {"type": "float"},
+            "phase1_sec":            {"type": "float"},
+            "phase2_sec":            {"type": "float"},
+            "phase3_sec":            {"type": "float"},
+        }}},
+    },
 }
 
 
@@ -71,7 +88,7 @@ def main() -> None:
         mark = "✓" if r.ok else f"✗ [{r.status_code}]"
         print(f"  {mark}  {PREFIX}-{name}-template")
     print("\nDone. Now create data views in Kibana → Stack Management → Data Views")
-    print(f"  Patterns: {PREFIX}-runs*,  {PREFIX}-pages*,  {PREFIX}-logs*")
+    print(f"  Patterns: {PREFIX}-runs*,  {PREFIX}-pages*,  {PREFIX}-logs*,  {PREFIX}-crawls*")
 
 
 if __name__ == "__main__":

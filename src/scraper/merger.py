@@ -15,7 +15,7 @@ def merge_persons(persons: list[RoivDecisionMaker_v2]) -> list[RoivDecisionMaker
     only fill in fields that are still None.
     """
     groups: dict[str, dict] = {}
-    order: list[str] = []  # preserve insertion order
+    order: list[str] = []
 
     for person in persons:
         key = _normalize_name(person.person_full_name)

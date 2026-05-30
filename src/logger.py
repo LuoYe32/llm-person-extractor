@@ -64,18 +64,18 @@ def setup_logging(level: int = logging.DEBUG) -> None:
     if settings.ELASTICSEARCH_URL:
         from src.elastic import ElasticsearchHandler, start as es_start
         es_handler = ElasticsearchHandler()
-        es_handler.setLevel(logging.INFO)   # ship INFO+ to ES; DEBUG stays local only
+        es_handler.setLevel(logging.INFO)
         root.addHandler(es_handler)
-        es_start()                          # launch background sender thread
+        es_start()
 
     for noisy in (
         "httpx", "httpcore", "openai", "langchain", "langchain_core",
         "langchain_openai", "urllib3", "requests", "pydantic_ai",
         "pydantic_ai._utils", "hpack", "h2",
+        "elastic_transport", "elasticsearch",
     ):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 def get_logger(name: str) -> logging.Logger:
-    """Return a named logger. Pass __name__ from the calling module."""
     return logging.getLogger(name)
